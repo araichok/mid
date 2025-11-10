@@ -1,269 +1,388 @@
-// main.cpp — Steam Chimney with Simple House Model
-// Make sure to link: OpenGL, GLFW, and GLAD
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
 
-#include </Users/ayaulym/Downloads/Files-2/Polygon/Triangle/External/include/glad/glad.h>
-#include </opt/homebrew/Cellar/glfw/3.4/include/GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include <iostream>
+
 #include <vector>
-#include <random>
-#include <chrono>
-#include <algorithm>
-
-#define MAX_PARTICLES 4000
-
-// ---------- BASIC SHADERS FOR CUBE ----------
-static const char* cubeVS = R"GLSL(
-#version 330 core
-layout(location = 0) in vec3 inPos;
+#include <iostream>
+#include <cstdlib>
+#include <ctime>
+const char* cubeVS = R"(#version 330 core
+layout(location=0) in vec3 aPos;
 uniform mat4 uMVP;
-void main() {
-    gl_Position = uMVP * vec4(inPos, 1.0);
+void main()
+{
+    gl_Position = uMVP * vec4(aPos, 1.0);
 }
-)GLSL";
+)";
 
-static const char* cubeFS = R"GLSL(
-#version 330 core
+const char* cubeFS = R"(#version 330 core
 out vec4 FragColor;
 uniform vec3 uColor;
-void main() {
+void main()
+{
     FragColor = vec4(uColor, 1.0);
 }
-)GLSL";
+)";
+const char* particleVS = R"(#version 330 core
+layout(location = 0) in vec3 aPos;
+uniform float uTime;
 
-// ---------- PARTICLE SHADERS (same as before) ----------
-static const char* vertexShaderSrc = R"GLSL(
-#version 330 core
-layout(location = 0) in vec3 inPosition;
-layout(location = 1) in float inLife;
-layout(location = 2) in float inSize;
-out float vLife;
-out float vSize;
-void main() {
-    gl_Position = vec4(inPosition, 1.0);
-    vLife = inLife;
-    vSize = inSize;
+out vec3 vWorldPos;
+out float vAlpha;
+
+void main()
+{
+    float lifetime = 4.0;
+    float seed = aPos.x * 13.37 + aPos.z * 7.91;
+    float age = mod(uTime + seed, lifetime);
+
+    float riseSpeed = 0.35;
+    float spread = 0.25;
+    float factor = age / lifetime;
+
+    // Базовая точка выхода дыма (из трубы)
+    vec3 base = vec3(0.6, 1.4, 0.0);
+
+    // Небольшое горизонтальное колебание (эффект ветра)
+    float windX = sin(uTime * 0.7 + seed) * 0.05 * factor;
+    float windZ = cos(uTime * 0.9 + seed) * 0.05 * factor;
+
+    vec3 offset = vec3(aPos.x * (1.0 + factor * 1.5) + windX,
+                       age * riseSpeed,
+                       aPos.z * (1.0 + factor * 1.5) + windZ);
+
+    vWorldPos = base + offset;
+    vAlpha = 1.0 - pow(factor, 1.6); // более мягкое затухание
+    gl_Position = vec4(vWorldPos, 1.0);
 }
-)GLSL";
-
-static const char* geometryShaderSrc = R"GLSL(
-#version 330 core
+)";
+const char* particleGS = R"(#version 330 core
 layout(points) in;
 layout(triangle_strip, max_vertices = 4) out;
-in float vLife[];
-in float vSize[];
-out vec2 gUV;
-out float fLife;
-uniform mat4 uV;
-uniform mat4 uP;
-uniform vec3 uCameraRight;
-uniform vec3 uCameraUp;
-void main() {
-    vec3 pos = gl_in[0].gl_Position.xyz;
-    float s = vSize[0];
-    float life = vLife[0];
-    vec3 right = normalize(uCameraRight) * s;
-    vec3 up = normalize(uCameraUp) * s;
-    vec4 wpos;
-    gUV = vec2(0.0, 0.0); fLife = life; wpos = vec4(pos - right - up, 1.0); gl_Position = uP * uV * wpos; EmitVertex();
-    gUV = vec2(1.0, 0.0); fLife = life; wpos = vec4(pos + right - up, 1.0); gl_Position = uP * uV * wpos; EmitVertex();
-    gUV = vec2(0.0, 1.0); fLife = life; wpos = vec4(pos - right + up, 1.0); gl_Position = uP * uV * wpos; EmitVertex();
-    gUV = vec2(1.0, 1.0); fLife = life; wpos = vec4(pos + right + up, 1.0); gl_Position = uP * uV * wpos; EmitVertex();
+
+in vec3 vWorldPos[];
+in float vAlpha[];
+out vec2 gTexCoord;
+out float gAlpha;
+
+uniform mat4 uView;
+uniform mat4 uProj;
+
+void main()
+{
+    vec3 center = vWorldPos[0];
+    float alpha = vAlpha[0];
+
+    vec3 right = vec3(uView[0][0], uView[1][0], uView[2][0]);
+    vec3 up    = vec3(uView[0][1], uView[1][1], uView[2][1]);
+
+    // Дым теперь меньше
+    float size = 0.18 * alpha;
+
+    vec3 p0 = center + (-right - up) * size;
+    vec3 p1 = center + ( right - up) * size;
+    vec3 p2 = center + (-right + up) * size;
+    vec3 p3 = center + ( right + up) * size;
+
+    gAlpha = alpha;
+
+    gl_Position = uProj * uView * vec4(p0, 1.0);
+    gTexCoord = vec2(0.0, 0.0);
+    EmitVertex();
+
+    gl_Position = uProj * uView * vec4(p1, 1.0);
+    gTexCoord = vec2(1.0, 0.0);
+    EmitVertex();
+
+    gl_Position = uProj * uView * vec4(p2, 1.0);
+    gTexCoord = vec2(0.0, 1.0);
+    EmitVertex();
+
+    gl_Position = uProj * uView * vec4(p3, 1.0);
+    gTexCoord = vec2(1.0, 1.0);
+    EmitVertex();
+
     EndPrimitive();
 }
-)GLSL";
-
-static const char* fragmentShaderSrc = R"GLSL(
-#version 330 core
-in vec2 gUV;
-in float fLife;
+)";
+const char* particleFS = R"(#version 330 core
+in vec2 gTexCoord;
+in float gAlpha;
 out vec4 FragColor;
-uniform vec3 uColor0;
-uniform vec3 uColor1;
-void main() {
-    vec2 c = gUV - vec2(0.5);
-    float dist = length(c) / 0.5;
-    float alpha = exp(-dist * dist * 4.0);
-    alpha *= clamp(fLife, 0.0, 1.0);
-    vec3 col = mix(uColor1, uColor0, fLife);
-    FragColor = vec4(col, alpha);
-    if (FragColor.a < 0.02) discard;
-}
-)GLSL";
 
-// ---------- UTILS ----------
-static GLuint compile(GLenum t, const char* s) {
-    GLuint id = glCreateShader(t);
-    glShaderSource(id, 1, &s, nullptr);
-    glCompileShader(id);
-    GLint ok; glGetShaderiv(id, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        char info[512]; glGetShaderInfoLog(id, 512, nullptr, info);
-        std::cerr << "Shader error:\n" << info << std::endl;
+void main()
+{
+    vec2 uv = gTexCoord;
+    float d = distance(uv, vec2(0.5));
+    if (d > 0.5) discard;
+
+    // Мягкие края и постепенное рассеивание
+    float edge = smoothstep(0.5, 0.25, d);
+    float alpha = gAlpha * edge * 0.8;
+
+    // Цвет — мягкий серо-голубой дым
+    vec3 color = mix(vec3(0.85, 0.88, 0.92), vec3(0.9, 0.9, 0.95), 1.0 - gAlpha);
+
+    FragColor = vec4(color, alpha);
+}
+)";
+
+
+GLuint compileShader(GLenum type, const char* src)
+{
+    GLuint sh = glCreateShader(type);
+    glShaderSource(sh, 1, &src, nullptr);
+    glCompileShader(sh);
+    GLint ok;
+    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+    if (!ok)
+    {
+        char log[1024];
+        glGetShaderInfoLog(sh, 1024, nullptr, log);
+        std::cerr << "Shader compile error:\n" << log << "\n";
     }
-    return id;
+    return sh;
 }
 
-static GLuint makeProg(const char* vs, const char* fs, const char* gs = nullptr) {
-    GLuint p = glCreateProgram();
-    GLuint v = compile(GL_VERTEX_SHADER, vs);
-    GLuint f = compile(GL_FRAGMENT_SHADER, fs);
-    glAttachShader(p, v);
-    glAttachShader(p, f);
-    GLuint g = 0;
-    if (gs) { g = compile(GL_GEOMETRY_SHADER, gs); glAttachShader(p, g); }
-    glLinkProgram(p);
-    glDeleteShader(v); glDeleteShader(f);
-    if (g) glDeleteShader(g);
-    return p;
+GLuint makeProgram(const char* vsSrc, const char* fsSrc, const char* gsSrc = nullptr)
+{
+    GLuint vs = compileShader(GL_VERTEX_SHADER, vsSrc);
+    GLuint fs = compileShader(GL_FRAGMENT_SHADER, fsSrc);
+    GLuint gs = 0;
+    if (gsSrc)
+        gs = compileShader(GL_GEOMETRY_SHADER, gsSrc);
+
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, vs);
+    glAttachShader(prog, fs);
+    if (gsSrc) glAttachShader(prog, gs);
+
+    glLinkProgram(prog);
+
+    GLint ok;
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    if (!ok)
+    {
+        char log[1024];
+        glGetProgramInfoLog(prog, 1024, nullptr, log);
+        std::cerr << "Program link error:\n" << log << "\n";
+    }
+
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (gsSrc) glDeleteShader(gs);
+
+    return prog;
 }
 
-struct Particle {
-    glm::vec3 pos, vel;
-    float life, lifetime, size;
+float cubeVerts[] = {
+    -0.5f,-0.5f,-0.5f,
+     0.5f,-0.5f,-0.5f,
+     0.5f, 0.5f,-0.5f,
+    -0.5f, 0.5f,-0.5f,
+    -0.5f,-0.5f, 0.5f,
+     0.5f,-0.5f, 0.5f,
+     0.5f, 0.5f, 0.5f,
+    -0.5f, 0.5f, 0.5f
 };
 
-// ---------- MAIN ----------
-int main() {
-    glfwInit();
+unsigned int cubeIdx[] = {
+    0,1,2, 2,3,0,
+    4,5,6, 6,7,4,
+    0,4,7, 7,3,0,
+    1,5,6, 6,2,1,
+    3,2,6, 6,7,3,
+    0,1,5, 5,4,0
+};
+
+
+int main()
+{
+    
+    std::srand((unsigned)std::time(nullptr));
+
+    if (!glfwInit())
+    {
+        std::cerr << "Failed to init GLFW\n";
+        return -1;
+    }
+
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* w = glfwCreateWindow(1280, 720, "Steam Chimney", 0, 0);
-    glfwMakeContextCurrent(w);
-    gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
+    GLFWwindow* win = glfwCreateWindow(800, 600, "Steam from Chimney - Geometry Shader", nullptr, nullptr);
+    if (!win)
+    {
+        std::cerr << "Failed to create window\n";
+        glfwTerminate();
+        return -1;
+    }
+
+    glfwMakeContextCurrent(win);
+
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+    {
+        std::cerr << "Failed to init GLAD\n";
+        return -1;
+    }
+
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    GLuint steamProg = makeProg(vertexShaderSrc, fragmentShaderSrc, geometryShaderSrc);
-    GLuint cubeProg = makeProg(cubeVS, cubeFS);
-
-    // ----- Cube data for house base + chimney -----
-    float cubeVerts[] = {
-        -0.5f, 0.0f, -0.5f,   0.5f, 0.0f, -0.5f,   0.5f, 1.0f, -0.5f,  -0.5f, 1.0f, -0.5f,
-        -0.5f, 0.0f,  0.5f,   0.5f, 0.0f,  0.5f,   0.5f, 1.0f,  0.5f,  -0.5f, 1.0f,  0.5f,
-    };
-    unsigned int cubeIdx[] = {
-        0,1,2,2,3,0, 4,5,6,6,7,4, 0,4,7,7,3,0, 1,5,6,6,2,1, 3,2,6,6,7,3, 0,1,5,5,4,0
-    };
+    GLuint cubeProg  = makeProgram(cubeVS, cubeFS);
+    GLuint smokeProg = makeProgram(particleVS, particleFS, particleGS);
 
     GLuint cubeVAO, cubeVBO, cubeEBO;
     glGenVertexArrays(1, &cubeVAO);
     glGenBuffers(1, &cubeVBO);
     glGenBuffers(1, &cubeEBO);
+
     glBindVertexArray(cubeVAO);
     glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVerts), cubeVerts, GL_STATIC_DRAW);
+
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cubeEBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(cubeIdx), cubeIdx, GL_STATIC_DRAW);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), 0);
+
     glBindVertexArray(0);
 
-    // ----- Particles -----
-    GLuint vao, vbo;
-    glGenVertexArrays(1, &vao);
-    glGenBuffers(1, &vbo);
-
-    std::vector<Particle> parts;
-    glm::vec3 emitter(0.0f, 1.2f, 0.0f); // on top of chimney
-    std::mt19937 rng((unsigned)std::chrono::system_clock::now().time_since_epoch().count());
-    std::uniform_real_distribution<float> rnd(0, 1);
-
-    float last = glfwGetTime();
-    while (!glfwWindowShouldClose(w)) {
-        float t = glfwGetTime(), dt = t - last; last = t;
-        glfwPollEvents();
-
-        // update particles
-        for (auto& p : parts) {
-            p.vel += glm::vec3(0, 0.5, 0) * dt;
-            p.pos += p.vel * dt;
-            p.life -= dt;
-        }
-        parts.erase(std::remove_if(parts.begin(), parts.end(),
-                                   [](const Particle& p){return p.life<=0;}),
-                    parts.end());
-
-        for (int i=0;i<8;i++) {
-            Particle p;
-            p.pos = emitter + glm::vec3((rnd(rng)-0.5f)*0.2f,0,(rnd(rng)-0.5f)*0.2f);
-            p.vel = glm::vec3(0,(rnd(rng)*1.5f)+1.0f,0);
-            p.lifetime = 2.0f;
-            p.life = p.lifetime;
-            p.size = 0.25f;
-            parts.push_back(p);
-        }
-
-        int W,H; glfwGetFramebufferSize(w,&W,&H);
-        glViewport(0,0,W,H);
-        glClearColor(0.5,0.7,0.95,1);
-        glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-
-        glm::vec3 cam(0,2,5);
-        glm::mat4 V = glm::lookAt(cam, glm::vec3(0,1,0), glm::vec3(0,1,0));
-        glm::mat4 P = glm::perspective(glm::radians(45.0f), (float)W/H, 0.1f, 100.0f);
-
-        // ---- Draw house base ----
-        glUseProgram(cubeProg);
-        glm::mat4 M = glm::translate(glm::mat4(1), glm::vec3(0,-0.5,0));
-        M = glm::scale(M, glm::vec3(2,1,2));
-        glm::mat4 MVP = P*V*M;
-        glUniformMatrix4fv(glGetUniformLocation(cubeProg,"uMVP"),1,GL_FALSE,glm::value_ptr(MVP));
-        glUniform3f(glGetUniformLocation(cubeProg,"uColor"),0.6f,0.4f,0.3f);
-        glBindVertexArray(cubeVAO);
-        glDrawElements(GL_TRIANGLES,36,GL_UNSIGNED_INT,0);
-
-        // ---- Draw chimney ----
-        M = glm::translate(glm::mat4(1), glm::vec3(0,0.5,0));
-        M = glm::scale(M, glm::vec3(0.3,1.2,0.3));
-        MVP = P*V*M;
-        glUniformMatrix4fv(glGetUniformLocation(cubeProg,"uMVP"),1,GL_FALSE,glm::value_ptr(MVP));
-        glUniform3f(glGetUniformLocation(cubeProg,"uColor"),0.3f,0.3f,0.3f);
-        glDrawElements(GL_TRIANGLES,36,GL_UNSIGNED_INT,0);
-
-        // ---- Draw particles ----
-        glUseProgram(steamProg);
-        glUniformMatrix4fv(glGetUniformLocation(steamProg,"uV"),1,GL_FALSE,glm::value_ptr(V));
-        glUniformMatrix4fv(glGetUniformLocation(steamProg,"uP"),1,GL_FALSE,glm::value_ptr(P));
-        glUniform3f(glGetUniformLocation(steamProg,"uColor0"),0.95f,0.95f,0.95f);
-        glUniform3f(glGetUniformLocation(steamProg,"uColor1"),0.7f,0.7f,0.8f);
-        glm::vec3 right(V[0][0],V[1][0],V[2][0]);
-        glm::vec3 up(V[0][1],V[1][1],V[2][1]);
-        glUniform3fv(glGetUniformLocation(steamProg,"uCameraRight"),1,glm::value_ptr(right));
-        glUniform3fv(glGetUniformLocation(steamProg,"uCameraUp"),1,glm::value_ptr(up));
-
-        glBindVertexArray(vao);
-        glBindBuffer(GL_ARRAY_BUFFER,vbo);
-        const GLsizei stride = 5*sizeof(float);
-        glBufferData(GL_ARRAY_BUFFER,MAX_PARTICLES*stride,nullptr,GL_STREAM_DRAW);
-        if(!parts.empty()){
-            std::vector<float> buf;
-            buf.reserve(parts.size()*5);
-            for(auto&p:parts){
-                buf.push_back(p.pos.x);buf.push_back(p.pos.y);
-                buf.push_back(p.pos.z);
-                buf.push_back(p.life/p.lifetime);
-                buf.push_back(p.size);
-            }
-            glBufferSubData(GL_ARRAY_BUFFER,0,buf.size()*sizeof(float),buf.data());
-        }
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,stride,(void*)0);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1,1,GL_FLOAT,GL_FALSE,stride,(void*)(3*sizeof(float)));
-        glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2,1,GL_FLOAT,GL_FALSE,stride,(void*)(4*sizeof(float)));
-        glDepthMask(GL_FALSE);
-        glDrawArrays(GL_POINTS,0,parts.size());
-        glDepthMask(GL_TRUE);
-
-        glfwSwapBuffers(w);
+    const int NUM_PARTICLES = 700;
+    std::vector<glm::vec3> particles(NUM_PARTICLES);
+    for (int i = 0; i < NUM_PARTICLES; ++i)
+    {
+        float rx = ((std::rand() % 100) / 100.0f - 0.5f) * 0.18f;
+        float rz = ((std::rand() % 100) / 100.0f - 0.5f) * 0.18f;
+        particles[i] = glm::vec3(rx, 0.0f, rz);
     }
+
+    GLuint smokeVAO, smokeVBO;
+    glGenVertexArrays(1, &smokeVAO);
+    glGenBuffers(1, &smokeVBO);
+
+    glBindVertexArray(smokeVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, smokeVBO);
+    glBufferData(GL_ARRAY_BUFFER, particles.size() * sizeof(glm::vec3), particles.data(), GL_STATIC_DRAW);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
+
+    float startTime = (float)glfwGetTime();
+    while (!glfwWindowShouldClose(win))
+    {
+        float t = (float)glfwGetTime() - startTime;
+
+        glClearColor(0.6f, 0.85f, 1.0f, 1.0f); 
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glm::mat4 P = glm::perspective(glm::radians(45.0f), 800.0f / 600.0f, 0.1f, 100.0f);
+        glm::mat4 V = glm::lookAt(glm::vec3(4.0f, 3.0f, 6.0f),
+                                  glm::vec3(0.0f, 0.5f, 0.0f),
+                                  glm::vec3(0.0f, 1.0f, 0.0f));
+
+        glUseProgram(cubeProg);
+        GLint locMVP   = glGetUniformLocation(cubeProg, "uMVP");
+        GLint locColor = glGetUniformLocation(cubeProg, "uColor");
+
+        glBindVertexArray(cubeVAO);
+
+        {
+            glm::mat4 M = glm::scale(glm::mat4(1.0f), glm::vec3(2.0f, 1.0f, 2.0f));
+            glm::mat4 MVP = P * V * M;
+            glUniformMatrix4fv(locMVP, 1, GL_FALSE, glm::value_ptr(MVP));
+            glUniform3f(locColor, 0.65f, 0.45f, 0.25f);
+            glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+        }
+        {
+            glm::mat4 M = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.75f, 0.0f));
+            M = glm::scale(M, glm::vec3(2.2f, 0.45f, 2.2f));
+            glm::mat4 MVP = P * V * M;
+            glUniformMatrix4fv(locMVP, 1, GL_FALSE, glm::value_ptr(MVP));
+            glUniform3f(locColor, 0.7f, 0.15f, 0.15f);
+            glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+        }
+
+        {
+            glm::mat4 M = glm::translate(glm::mat4(1.0f), glm::vec3(0.6f, 1.0f, 0.0f));
+            M = glm::scale(M, glm::vec3(0.3f, 0.6f, 0.3f));
+            glm::mat4 MVP = P * V * M;
+            glUniformMatrix4fv(locMVP, 1, GL_FALSE, glm::value_ptr(MVP));
+            glUniform3f(locColor, 0.3f, 0.3f, 0.3f);
+            glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+        }
+{
+    glm::mat4 M = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -0.5f, 0.0f));
+    M = glm::scale(M, glm::vec3(10.0f, 0.05f, 10.0f));
+    glm::mat4 MVP = P * V * M;
+    glUniformMatrix4fv(locMVP, 1, GL_FALSE, glm::value_ptr(MVP));
+
+    glUniform3f(locColor, 0.3f, 0.7f, 0.3f); 
+
+    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+}
+
+        {
+            glm::mat4 M = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -0.25f, 1.01f));
+            M = glm::scale(M, glm::vec3(0.4f, 0.6f, 0.05f));
+            glm::mat4 MVP = P * V * M;
+            glUniformMatrix4fv(locMVP, 1, GL_FALSE, glm::value_ptr(MVP));
+            glUniform3f(locColor, 0.35f, 0.23f, 0.12f);
+            glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+        }
+
+        auto drawWindow = [&](float x)
+        {
+            glm::mat4 M = glm::translate(glm::mat4(1.0f), glm::vec3(x, 0.2f, 1.01f));
+            M = glm::scale(M, glm::vec3(0.3f, 0.3f, 0.05f));
+            glm::mat4 MVP = P * V * M;
+            glUniformMatrix4fv(locMVP, 1, GL_FALSE, glm::value_ptr(MVP));
+            glUniform3f(locColor, 0.55f, 0.8f, 1.0f);
+            glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+        };
+        drawWindow(-0.6f);
+        drawWindow( 0.6f);
+
+for (int i = 0; i < 8; ++i) {
+    float angle = i * glm::two_pi<float>() / 8.0f;
+    float radius = 2.8f + ((i % 2) ? 0.3f : -0.3f);
+    float x = cos(angle) * radius;
+    float z = sin(angle) * radius;
+    glm::mat4 M = glm::translate(glm::mat4(1.0f), glm::vec3(x, -0.3f, z));
+    M = glm::scale(M, glm::vec3(0.4f, 0.3f, 0.4f));
+    glm::mat4 MVP = P * V * M;
+    glUniformMatrix4fv(locMVP, 1, GL_FALSE, glm::value_ptr(MVP));
+    glUniform3f(locColor, 0.25f, 0.55f, 0.25f);
+    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+}
+
+
+        glBindVertexArray(0);
+        glUseProgram(smokeProg);
+
+        GLint locView  = glGetUniformLocation(smokeProg, "uView");
+        GLint locProj  = glGetUniformLocation(smokeProg, "uProj");
+        GLint locTime  = glGetUniformLocation(smokeProg, "uTime");
+
+        glUniformMatrix4fv(locView, 1, GL_FALSE, glm::value_ptr(V));
+        glUniformMatrix4fv(locProj, 1, GL_FALSE, glm::value_ptr(P));
+        glUniform1f(locTime, t);
+
+        glBindVertexArray(smokeVAO);
+        glDrawArrays(GL_POINTS, 0, NUM_PARTICLES);
+        glBindVertexArray(0);
+
+        glfwSwapBuffers(win);
+        glfwPollEvents();
+    }
+
     glfwTerminate();
     return 0;
 }
